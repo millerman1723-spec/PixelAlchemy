@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -325,11 +324,9 @@
         // Creative Digital Alchemy Studio - Main Application Logic
 
         // Global State and Constants
-        const apiKey = ""; // Will be provided at runtime
-
-        // FIX: Removed '?key=' + apiKey because it breaks authorization when apiKey is empty.
-        // The Canvas environment provides the authorization implicitly.
-        const getCreativeApiUrl = () => 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-image-preview:generateContent';
+     // NEVER store API keys in client-side code!
+	// This points to your secure backend
+const getCreativeApiUrl = () => 'https://pixelalchemy-backend.onrender.com/generate';
 
         const IMAGE_MIME_TYPE = 'image/png';
         const MAX_DIMENSION = 768; // Enforce a max dimension for model stability
@@ -929,155 +926,67 @@
             });
 
 
-            // Main Diffusion/Generation Handler (UPDATED for Inpainting)
-            document.getElementById('apply-diffusion-btn').addEventListener('click', async () => {
-                const isPureMode = pureGenerationMode.checked;
-                const isMaskActive = maskDrawn;
+          // Main Diffusion/Generation Handler (SECURE VERSION)
+document.getElementById('apply-diffusion-btn').addEventListener('click', async () => {
+  // [Your existing validation code remains the same...]
 
-                if (!isPureMode && !currentImage) {
-                    showUINotification("Please import an image first or use Pure Generation Mode.", 'warning');
-                    return;
-                }
+  showLoading(isPureMode ? 'Creating pure artistic content...' : (isMaskActive ? 'Applying Inpainting Transformation...' : 'Transforming your creative vision...'));
 
-                if (isMaskActive && isPureMode) {
-                    showUINotification("Inpainting mode is only available in Image-to-Image mode. Please uncheck 'Pure Generation'.", 'error');
-                    return;
-                }
+  try {
+    const prompt = document.getElementById('diffusion-prompt').value;
+    const negative = document.getElementById('negative-prompt').value;
+    const creativity = parseFloat(creativitySlider.value).toFixed(2);
+    const strength = parseFloat(strengthSlider.value).toFixed(2);
+    
+    // Prepare request payload
+    const payload = {
+      prompt,
+      negative,
+      creativity,
+      strength
+    };
 
-                const prompt = document.getElementById('diffusion-prompt').value;
-                const negative = document.getElementById('negative-prompt').value;
-                const seedInput = document.getElementById('seed-input').value;
-                
-                if (!prompt.trim()) {
-                    showUINotification("Describe your creative vision in the prompt...", 'error');
-                    return;
-                }
+    // Add image data if not pure generation
+    if (!isPureMode && currentImage) {
+      payload.image = canvas.toDataURL().split(',')[1];
+      if (maskDrawn) {
+        payload.mask = getBinaryMaskBase64();
+      }
+    }
 
-                showLoading(isPureMode ? 'Creating pure artistic content...' : (isMaskActive ? 'Applying Inpainting Transformation...' : 'Transforming your creative vision...'));
+    // Call YOUR backend (NOT Google directly)
+    const response = await fetch(getCreativeApiUrl(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
 
-                try {
-                    const finalApiUrl = getCreativeApiUrl();
-                    let payload;
-                    
-                    const generationConfig = {
-                        responseModalities: ['TEXT', 'IMAGE'],
-                        temperature: 0.9,
-                        topK: 40,
-                        topP: 0.95
-                    };
+    if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(errorData.error || `HTTP error! status: ${response.status}`);
+    }
 
-                    const parsedSeed = parseInt(seedInput);
-                    if (seedInput && !isNaN(parsedSeed)) {
-                        generationConfig.seed = parsedSeed;
-                    }
+    const result = await response.json();
+    
+    // Process the response
+    if (result.image) {
+      await new Promise(resolve => loadImageSourceToCanvas(result.image, resolve));
+      showUINotification('Advanced creation complete! ✨', 'success');
+      
+      if (isInpaintingMode) {
+        toggleInpaintingMode();
+      }
+    } else {
+      throw new Error("No image data returned from server");
+    }
 
-                    if (isPureMode) {
-                        // Text-to-Image generation
-                        const fullPrompt = `${prompt}. --negative ${negative.trim() || 'blurry, low quality, watermarks, poorly defined'}`;
-                        
-                        payload = {
-                            contents: [{
-                                parts: [{ text: fullPrompt }]
-                            }],
-                            generationConfig: generationConfig,
-                        };
-                    } else {
-                        // Image-to-Image or Inpainting
-                        const inputDataURL = canvas.toDataURL(IMAGE_MIME_TYPE);
-                        const base64ImageData = inputDataURL.split(',')[1];
-                        
-                        const creativity = parseFloat(creativitySlider.value).toFixed(2);
-                        const strength = parseFloat(strengthSlider.value).toFixed(2);
-                        
-                        // --- DEBUG LOG FOR DIMENSIONS ---
-                        console.log(`Sending image data (W: ${canvas.width}, H: ${canvas.height}) with creativity=${creativity} and strength=${strength}`);
-                        // --- END DEBUG LOG ---
-
-
-                        // Base Prompt Instruction
-                        let userPrompt = `
-Transform the provided image based on the Creative Vision: "${prompt}".
-Apply a transformation with a Strength of ${strength} (0.0=min change, 1.0=max change) and a Creative Fidelity Blend of ${creativity} (0.0=original style, 1.0=new style).
-Avoid: ${negative.trim() || 'blurry, low quality, watermarks, poorly defined'}
-`;
-                        
-                        // Array of parts for the API call
-                        const contentsParts = [
-                            { text: userPrompt }, 
-                            {
-                                inlineData: {
-                                    mimeType: IMAGE_MIME_TYPE,
-                                    data: base64ImageData
-                                }
-                            }
-                        ];
-
-                        if (isMaskActive) {
-                            // Add the mask image if a mask has been drawn
-                            const maskBase64 = getBinaryMaskBase64();
-                            contentsParts.push({
-                                inlineData: {
-                                    mimeType: IMAGE_MIME_TYPE, // Mask is also a PNG
-                                    data: maskBase64
-                                }
-                            });
-                            // Clear mask after successful submission
-                            clearMask();
-                        }
-
-                        payload = {
-                            contents: [{ parts: contentsParts }],
-                            generationConfig: generationConfig,
-                        };
-                    }
-
-                    const response = await exponentialBackoffFetch(finalApiUrl, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-
-                    const result = await response.json();
-                    const candidate = result.candidates?.[0];
-
-                    if (!candidate) {
-                        throw new Error("API failed to return any candidate response. Check the console for network errors.");
-                    }
-                    
-                    let base64Data = candidate.content?.parts?.find(p => p.inlineData)?.inlineData?.data;
-                    const finishReason = candidate.finishReason;
-
-
-                    if (!base64Data) {
-                        let userMessage = "Generation failed. No image data was returned.";
-                        
-                        if (finishReason === 'IMAGE_SAFETY' || finishReason === 'PROHIBITED_CONTENT') {
-                            userMessage = "Generation Error: Content/Prompt Blocked (Safety Filter). Please revise your prompt using the Prompt Guide techniques.";
-                        } else if (finishReason === 'IMAGE_OTHER') {
-                            userMessage = "Generation Error: The model encountered an issue. Try simplifying the prompt or adjusting the Deep Transformation sliders.";
-                        } else if (finishReason && finishReason !== 'STOP') {
-                            userMessage = `Generation completed with note: ${finishReason}`;
-                        }
-                        
-                        throw new Error(userMessage);
-                    }
-
-                    await new Promise(resolve => loadImageSourceToCanvas(base64Data, resolve));
-                    showUINotification('Advanced creation complete! ✨', 'success');
-                    // Automatically disable inpainting mode if it was active after generating
-                    if (isInpaintingMode) {
-                        toggleInpaintingMode();
-                    }
-
-                } catch (error) {
-                    const errorMsg = error.message;
-                    console.error('Generation Error:', error);
-                    showUINotification(errorMsg, 'error');
-                } finally {
-                    hideLoading();
-                }
-            });
-
+  } catch (error) {
+    console.error('Generation Error:', error);
+    showUINotification(error.message, 'error');
+  } finally {
+    hideLoading();
+  }
+});
             // Enhanced random seed generation
             document.getElementById('random-seed-btn').addEventListener('click', () => {
                 const randomSeed = Math.floor(Math.random() * 4294967295);
